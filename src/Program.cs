@@ -15,312 +15,317 @@ using System.Runtime.InteropServices;
 
 namespace dnmp {
 
-    unsafe public class Bass {
-        [DllImport("bass.so")]
-        public static extern int BASS_Init(int dev, int freq, int flags, int win, IntPtr dsguid);
-        [DllImport("bass.so")]
-        public static extern int BASS_Free();
-        [DllImport("bass.so")]
-        public static extern int BASS_ChannelPlay(int handle, int restart);
-        [DllImport("bass.so")]
-        public static extern int BASS_ChannelStop(int handle);
-        [DllImport("bass.so")]
+    public static class Bass {
+        [DllImport("bass")]
+        public static extern int BASS_Init(int dev, int freq, int flags, IntPtr win, IntPtr dsguid);
+        [DllImport("bass")]
+        public static extern int BASS_StreamCreateFile(bool mem, string path, int offset, int len, int flags);
+        [DllImport("bass")]
+        public static extern int BASS_ChannelPlay(int handle, bool restart);
+        [DllImport("bass")]
         public static extern int BASS_ChannelPause(int handle);
-        [DllImport("bass.so")]
-        public static extern long BASS_ChannelGetPosition(int handle, int mode);
-        [DllImport("bass.so")]
-        public static extern int BASS_ChannelSetPosition(int handle, long pos, int mode);
-        [DllImport("bass.so")]
-        public static extern double BASS_ChannelBytes2Seconds(int handle, long pos);
-        [DllImport("bass.so")]
-        public static extern long BASS_ChannelSeconds2Bytes(int handle, double pos);
-        [DllImport("bass.so")]
+        [DllImport("bass")]
+        public static extern int BASS_ChannelStop(int handle);
+        [DllImport("bass")]
         public static extern int BASS_ChannelIsActive(int handle);
-        [DllImport("bass.so")]
-        public static extern int BASS_StreamCreateFile(int mem, string file, long offset, long length, int flags);
-        [DllImport("bass.so")]
+        [DllImport("bass")]
+        public static extern int BASS_Free();
+        [DllImport("bass")]
         public static extern int BASS_StreamFree(int handle);
-        [DllImport("bass.so")]
-        public static extern int BASS_IsStarted();
-        [DllImport("bass.so")]
-        public static extern float BASS_GetCPU();
-        [DllImport("bass.so")]
-        public static extern float BASS_GetVolume();
-        [DllImport("bass.so")]
-        public static extern int BASS_SetVolume(float vol);
-        [DllImport("bass.so")]
-        public static extern long BASS_ChannelGetLength(int handle, int mode);
-        [DllImport("bass.so")]
+        [DllImport("bass")]
+        public static extern int BASS_ChannelFree(int handle);
+        [DllImport("bass")]
+        public static extern double BASS_ChannelBytes2Seconds(int handle, long pos);
+        [DllImport("bass")]
+        public static extern long BASS_ChannelSeconds2Bytes(int handle, double pos);
+        [DllImport("bass")]
+        unsafe public static extern int BASS_ChannelGetAttribute(int handle, int attrib, float *val);
+        [DllImport("bass")]
         public static extern int BASS_ChannelSetAttribute(int handle, int attrib, float val);
-        [DllImport("bass.so")]
-        public static extern int BASS_ChannelGetAttribute(int handle, int attrib, float *val);
+        [DllImport("bass")]
+        public static extern long BASS_ChannelGetLength(int handle, int mode);
+        [DllImport("bass")]
+        public static extern long BASS_ChannelGetPosition(int handle, int mode);
+        [DllImport("bass")]
+        public static extern int BASS_ChannelSetPosition(int handle, long pos, int mode);
+        [DllImport("bass")]
+        public static extern string BASS_ChannelGetTags(int handle, int tags);
+    }
+
+    public class MusicPlayerException : Exception {
+        public MusicPlayerException(string err) : base(err) {}
     }
 
     public class MusicPlayer : IDisposable {
 
-        int handle = 0, index = 0;
-        List<string> files;
-        float vol = 1.0f;
-
-        public bool IsSwitching = false;
-
-        public EventHandler OnPlaylistFinished = (sender, args) => {};
-        public EventHandler<MusicPlayerEventArgs> OnPlayStarted = (sender, args) => {};
-
-        public MusicPlayer(List<string> files) {
-            this.files = files;
-            if(Bass.BASS_Init(-1, 44100, 0, 0, IntPtr.Zero) == 0) 
-                throw new BassException("Failed to initialize BASS");
+        List<string> playlist = null;
+        int pl_index = 0;
+        int handle;
+        public event EventHandler<EventArgs> OnPlaylistFinished;
+        float lastVolume = 1.0f;
+        public bool Loading {
+            get;
+            private set;
+        }
+        public MusicPlayer() {
+            if (Bass.BASS_Init(-1, 44100, 0, IntPtr.Zero, IntPtr.Zero) == 0) throw new MusicPlayerException("Failed to initialize device");
+            this.playlist = new List<string>();
+            this.OnPlaylistFinished += (sender, args) => { };
         }
 
-        public void Play() {
-            this.handle = Bass.BASS_StreamCreateFile(0, files[index], 0,0,0);
-            if(this.handle == 0 || Bass.BASS_ChannelPlay(this.handle, 1) == 0) {
-                this.files.RemoveAt(index);
-                index--;
-                Next();
+        public void Dispose() {
+            Bass.BASS_ChannelFree(this.handle);
+            Bass.BASS_Free();
+            this.playlist = null;
+        }
+
+        public void AddFile(string path) {
+            this.playlist.Add(path);
+        }
+
+        public void AddFiles(string[] files) {
+            foreach (var f in files) this.AddFile(f);
+        }
+
+        public void ShufflePlaylist() {
+            var pl = this.playlist;
+            List<string> newpl = new List<string>();
+            var r = new Random();
+            while (pl.Count > 0) {
+                int idx = r.Next(pl.Count);
+                if (newpl.Contains(pl[idx])) continue;
+                newpl.Add(pl[idx]);
+                pl.RemoveAt(idx);
             }
-            Bass.BASS_ChannelSetAttribute(handle, 2, this.vol);
-            OnPlayStarted.Invoke(this, new MusicPlayerEventArgs(files[index]));
+            this.playlist = newpl;
+        }
+
+        public string GetCurrentSong() {
+            string current = this.playlist[this.pl_index];
+            current = current.Substring(current.LastIndexOf('/') + 1);
+            return current;
+        }
+
+        public bool Play() {
+            this.Loading = true;
+            string path = this.playlist[this.pl_index];
+            this.handle = Bass.BASS_StreamCreateFile(false, path, 0, 0, 0);
+            if(this.handle == 0) {
+                this.Loading = false;
+                return false;
+            }
+            if (Bass.BASS_ChannelPlay(this.handle, false) == 0) {
+                this.Loading = false;
+                return false;
+            }
+            this.Loading = false;
+            this.SetVolume(this.lastVolume);
+            return true;
         }
 
         public void Stop() {
             Bass.BASS_ChannelStop(this.handle);
         }
 
-        public bool CheckIndex(int i) {
-            return i >= 0 && i < files.Count;
+        public void Pause() {
+            if(this.IsPlaying()) Bass.BASS_ChannelPause(this.handle);
         }
 
-        public void Next() {
-            this.IsSwitching = true;
-            this.Stop();
-            if(!CheckIndex(++this.index)) OnPlaylistFinished.Invoke(this, new EventArgs());
-            this.Play();
-            this.IsSwitching = false;
-        }
-
-        public void Prev() {
-            this.IsSwitching = true;
-            this.Stop();
-            if(!CheckIndex(this.index - 1)) {
-                this.IsSwitching = true;
-                return;
-            }
-            index--;
-            this.Play();
-            this.IsSwitching = false;
-        }
-
-        public bool IsPlaying() {
-            return Bass.BASS_ChannelIsActive(this.handle) == 1;
+        public void Resume() {
+            if(this.IsPaused()) Bass.BASS_ChannelPlay(this.handle, false);
         }
 
         public bool IsPaused() {
             return Bass.BASS_ChannelIsActive(this.handle) == 3;
         }
 
-        public void Pause() {
-            Bass.BASS_ChannelPause(this.handle);
+        public bool IsPlaying() {
+            return Bass.BASS_ChannelIsActive(this.handle) == 1;
         }
 
-        public void Resume() {
-            Bass.BASS_ChannelPlay(handle, 0);
+        private bool CheckIndex(int idx) {
+            return idx > 0 && idx < this.playlist.Count;
         }
 
-        public double GetDuration() {
-            long dur = Bass.BASS_ChannelGetLength(this.handle, 0);
-            return Bass.BASS_ChannelBytes2Seconds(this.handle, dur);
+        public int GetPlaylistIndex() => this.pl_index + 1;
+        public int GetPlaylistLength() => this.playlist.Count;
+
+        public void Next() {
+            if (!CheckIndex(this.pl_index + 1)) {
+                this.OnPlaylistFinished(this, new EventArgs());
+                return;
+            }
+            this.Stop();
+            this.pl_index ++;
+            while (!this.Play()) pl_index ++;
         }
 
-        public double GetPosition() {
-            long pos = Bass.BASS_ChannelGetPosition(handle, 0);
-            return Bass.BASS_ChannelBytes2Seconds(handle, pos);
+        public void Prev() {
+            if (!CheckIndex(this.pl_index - 1)) return;
+            this.Stop();
+            this.pl_index --;
+            while (!this.Play()) pl_index --;
         }
 
-        public void SetPosition(double seconds) {
-            long pos = Bass.BASS_ChannelSeconds2Bytes(handle, seconds);
-            Bass.BASS_ChannelSetPosition(handle, pos, 0);
+        public double GetPositionInSeconds() {
+            long pos = Bass.BASS_ChannelGetPosition(this.handle, 0);
+            return Bass.BASS_ChannelBytes2Seconds(this.handle, pos);
+        }
+
+        public bool SetPositionInSeconds(double secs) {
+            long pos = Bass.BASS_ChannelSeconds2Bytes(this.handle, secs);
+            return Bass.BASS_ChannelSetPosition(this.handle, pos, 0) != 0;
+        }
+
+        public double GetLengthInSeconds() {
+            long len = Bass.BASS_ChannelGetLength(this.handle, 0);
+            return Bass.BASS_ChannelBytes2Seconds(this.handle, len);
         }
 
         public void SetVolume(float vol) {
-            if(vol > 1) return;
-            if(vol < 0) return;
-            Bass.BASS_ChannelSetAttribute(handle, 2, vol);
+            if (vol > 1.5f || vol < 0.0f) return;
+            vol = (float) Math.Round(vol, 3);
+            this.lastVolume = vol;
+            Bass.BASS_ChannelSetAttribute(this.handle, 2 /* BASS_ATTRIB_VOL */, vol);
         }
 
         unsafe public float GetVolume() {
-            float vol = 0.0f;
-            Bass.BASS_ChannelGetAttribute(handle, 2, &vol);
-            this.vol = vol;
-            return this.vol;
-        }
-
-        public void Dispose() {
-            Bass.BASS_StreamFree(this.handle);
-            Bass.BASS_Free();
-        }
-
-        public int GetCurrentIndex() {
-            return this.index;
-        }
-
-        public int GetCount() {
-            return this.files.Count;
-        }
-
-        public string GetCurrentSong() {
-            return this.files[this.index].Substring(this.files[this.index].LastIndexOf("/") + 1);
+            float vol = 0;
+            Bass.BASS_ChannelGetAttribute(this.handle, 2, &vol);
+            return vol;
         }
     }
 
-    public class BassException : Exception {
-        public BassException(string msg = "Internal BASS error") : base(msg) {}
-    }
-    public class MusicPlayerEventArgs : EventArgs {
-        public string Song = "";
-        public MusicPlayerEventArgs(string song) : base() {
-            this.Song = song;
+    public class Program {
+
+        public static List<string> GetFiles(string dir, string fmt = "") {
+            var files = new List<string>();
+            foreach(var entry in Directory.GetFiles(dir)) if (entry.EndsWith(fmt)) files.Add(entry);
+            return files;
         }
-    }
 
-    static class Program {
+        private static void WriteAt(string s, int x, int y, int origCol, int origRow) {
+            try {
+                Console.SetCursorPosition(origCol + x, origRow + y);
+                Console.Write(s.PadRight(Console.BufferWidth));
+            } catch {
+                // Console.WriteLine($"{ex.Message}");
+            }
+        }
 
-        static MusicPlayer player;
-        static int initialPos = 0;
+        public static void Update(MusicPlayer player, int origCol, int origRow) {
+            var duration = TimeSpan.FromSeconds(player.GetLengthInSeconds());
+            var pos = TimeSpan.FromSeconds(player.GetPositionInSeconds());
+            WriteAt($"Playing ({player.GetPlaylistIndex()}/{player.GetPlaylistLength()}): {player.GetCurrentSong()}", 0, 0, origCol, origRow);
+            WriteAt($"{pos.ToString(@"hh\:mm\:ss")}/{duration.ToString(@"hh\:mm\:ss")} -- Volume: {player.GetVolume() * 100}%  {(player.IsPaused() ? "(Paused)" : "")}", 0, 1, origCol, origRow);
+            WriteAt("", 0, 2, origCol, origRow);
+        }
 
-        public static void Exit(int status) {
-            player.Stop();
+        public static void Exit(int code, MusicPlayer player) {
             player.Dispose();
             Console.CursorVisible = true;
-            Environment.Exit(status);
-        }
-
-        public static List<string> ShuffleList(List<string> _list) {
-            Random rand = new Random((int)DateTime.Now.Ticks);
-            List<string> shuffled = new List<string>();
-            List<string> list = _list;
-
-            int n = list.Count;
-
-            for(int i=0;i<n;i++) {
-                int pos = rand.Next() % list.Count;
-                shuffled.Add(list[pos]);
-                list.RemoveAt(pos);
-                list.TrimExcess();
-            }
-
-            return shuffled;
-        }
-
-        public static string GetPlayerState() {
-            return player.IsPaused() ? "(Paused)" : string.Empty;
-        }
-
-        public static void UpdateTerm() {
-            Console.WriteLine($"Playing: ({player.GetCurrentIndex() + 1}/{player.GetCount()}) {player.GetCurrentSong()}".PadRight(Console.BufferWidth).Replace('\n', ' '));
-            var pos = TimeSpan.FromSeconds((int)player.GetPosition());
-            var dur = TimeSpan.FromSeconds((int)player.GetDuration());
-            Console.WriteLine($"{pos.ToString()}/{dur.ToString()} -- Volume: {Convert.ToInt32(player.GetVolume() * 100.0f)}% {GetPlayerState()}".PadRight(Console.BufferWidth));
-            Console.WriteLine($"".PadRight(Console.BufferWidth));
-            Console.SetCursorPosition(0, initialPos == Console.BufferHeight - 1 ? initialPos - 3 : initialPos);
+            Environment.Exit(code);
         }
 
         public static void Main(string[] args) {
+            var player = new MusicPlayer();
+            player.OnPlaylistFinished += (sender, e) => Exit(0, player);
+            int origRow = Console.CursorTop;
+            int origCol = 0;
+            if (origRow > Console.BufferHeight - 3) {
+                Console.Write("\n\n\n");
+                origRow -= 3;
+            }
+            Console.SetCursorPosition(origCol, origRow);
 
+
+            bool shufflePlaylist = false;
+            double currentPosition = 0.0;
             Console.CursorVisible = false;
-            
-            List<string> files = new List<string>();
-            bool shuffle = false;
-            initialPos = Console.CursorTop;
 
-            foreach(var arg in args) {
-                if(arg == "-s" || arg == "--shuffle") shuffle = true;
-                if(Directory.Exists(arg)) files.AddRange(Directory.GetFiles(arg));
-                else if(File.Exists(arg)) files.Add(arg);
+            Console.CancelKeyPress += (sender, e) => Exit(0, player);
+
+            foreach (var arg in args) {
+                if (arg == "-s" || arg == "--shuffle") shufflePlaylist = true;
+                if (arg == "-v" || arg == "--version") {
+                    Console.WriteLine("dnmp (v1.0.0)");
+                    Exit(0, player);
+                }
+                else if (Directory.Exists(arg)) {
+                    var arr = GetFiles(arg).ToArray();
+                    Array.Sort(arr);
+                    player.AddFiles(arr);
+                }
+                else if (File.Exists(arg)) player.AddFile(arg);
             }
 
-            if(files.Count < 1) {
-                Console.WriteLine("Please specify at least one input file or directory");
-                Console.CursorVisible = true;
-                Environment.Exit(-1);
-            }
+            if (shufflePlaylist) player.ShufflePlaylist();
 
-            files.Sort();
-
-            if(shuffle) files = ShuffleList(files);
-
-            player = new MusicPlayer(files);
-            player.OnPlaylistFinished += (sender, e) => {
-                Exit(0);
-            };
-            player.OnPlayStarted += (sender, e) => {
-                UpdateTerm();
-            };
-            
             player.Play();
 
-            Timer updater = new Timer((sender) => {
-                UpdateTerm();
-            });
-
-            updater.Change(1000, 1000);
-
-            while(Bass.BASS_IsStarted() != 0) {
-
-                if(!player.IsPlaying() && !player.IsPaused() && !player.IsSwitching) {
-                    player.Next();
+            var updater = new Thread(() => {
+                while (true) {
+                    Update(player, origCol, origRow);
+                    Thread.Sleep(1000);
                 }
+            });
+            updater.Start();
 
-                if(Console.KeyAvailable) {
-                    var key = Console.ReadKey(true);
-                    switch(key.KeyChar) {
-                        case '>':
-                        player.Next();
-                        break;
-                        case '<':
-                        player.Prev();
-                        break;
+            while (true) {
+                if (!player.IsPlaying() && !player.IsPaused() && !player.Loading)
+                    player.Next();
+                
+                if (Console.KeyAvailable) {
+                    var keyInfo = Console.ReadKey(true);
+                    switch (keyInfo.KeyChar) {
                         case 'q':
-                        Exit(0);
-                        break;
+                            Exit(0, player);
+                            break;
+                        case '>':
+                            player.Next();
+                            break;
+                        case '<':
+                            player.Prev();
+                            break;
                         case ' ':
-                        if(player.IsPlaying()) player.Pause();
-                        else if(player.IsPaused()) player.Resume();
-                        break;
+                            if (player.IsPaused()) player.Resume();
+                            else if (player.IsPlaying()) player.Pause();
+                            break;
+                        default:
+                            break;
                     }
-                    switch(key.Key) {
-                        // Backward 5 or 30 seconds
-                        case ConsoleKey.LeftArrow:
-                        if(key.Modifiers == ConsoleModifiers.Shift)
-                            player.SetPosition(player.GetPosition() - 30.0);
-                        else player.SetPosition(player.GetPosition() - 5.0);
-                        break;
-                        // Forward 5 or 30 seconds
-                        case ConsoleKey.RightArrow:
-                        if(key.Modifiers == ConsoleModifiers.Shift)
-                            player.SetPosition(player.GetPosition() + 30.0);
-                        else player.SetPosition(player.GetPosition() + 5.0);
-                        break;
-                        // Volume up (0.01f)
-                        case ConsoleKey.UpArrow:
-                        player.SetVolume(player.GetVolume() + 0.01f);
-                        break;
-                        // Volume down (0.01f)
-                        case ConsoleKey.DownArrow:
-                        player.SetVolume(player.GetVolume() - 0.01f);
-                        break;
+
+                    switch (keyInfo.Key) {
                         case ConsoleKey.Enter:
-                        player.Next();
-                        break;
+                            player.Next();
+                            break;
+                        case ConsoleKey.UpArrow:
+                            player.SetVolume(player.GetVolume() + 0.05f);
+                            break;
+                        case ConsoleKey.DownArrow:
+                            player.SetVolume(player.GetVolume() - 0.05f);
+                            break;
+                        case ConsoleKey.LeftArrow:
+                            currentPosition = player.GetPositionInSeconds();
+                            if ((keyInfo.Modifiers & ConsoleModifiers.Shift) != 0)
+                                player.SetPositionInSeconds(currentPosition - 30.0);
+                            else
+                                player.SetPositionInSeconds(currentPosition - 5.0);
+                            break;
+                        case ConsoleKey.RightArrow:
+                            currentPosition = player.GetPositionInSeconds();
+                            if ((keyInfo.Modifiers & ConsoleModifiers.Shift) != 0)
+                                player.SetPositionInSeconds(currentPosition + 30.0);
+                            else
+                                player.SetPositionInSeconds(currentPosition + 5.0);
+                            break;
                     }
-                    UpdateTerm();
+
+                    Update(player, origCol, origRow);
                     continue;
                 }
-                Thread.Sleep(150);
+                Thread.Sleep(200);
             }
-
-            Exit(0);
         }
     }
 }
