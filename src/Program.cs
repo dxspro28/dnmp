@@ -96,6 +96,7 @@ namespace dnmp {
                 if (newpl.Contains(pl[idx])) continue;
                 newpl.Add(pl[idx]);
                 pl.RemoveAt(idx);
+                pl.TrimExcess();
             }
             this.playlist = newpl;
         }
