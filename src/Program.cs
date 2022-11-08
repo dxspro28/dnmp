@@ -1,7 +1,6 @@
 ﻿/*
     dnmp - DotNet Music Player
     Developed By: R.J. Silva -- @dxs-pro
-    Compile with: mcs Program.cs -out:dnmp
 
     Simple, fast, and easy to use music player that supports mp3, wav and ogg audio playback
     Dependencies: libbass.so
