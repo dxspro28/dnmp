@@ -228,6 +228,12 @@ namespace dnmp {
         }
 
         public static void Main(string[] args) {
+            
+            if(args.Length == 0) {
+                Console.WriteLine("usage: dnmp [files | folders] [-s | --shuffle]");
+                Environment.Exit(0);
+            }
+            
             var player = new MusicPlayer();
             player.OnPlaylistFinished += (sender, e) => Exit(0, player);
             int origRow = Console.CursorTop;
